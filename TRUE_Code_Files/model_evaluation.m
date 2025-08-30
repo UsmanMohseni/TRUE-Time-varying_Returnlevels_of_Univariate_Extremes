@@ -1,0 +1,253 @@
+function [params, accrate, Rhat, AMS,Years,para,mu1,sd1,Model_type,int_var,int_MW_par,Z]=model_evaluation(list_Covariates, AMS,best_covariates,File_path_Covariates,filename)
+% Initialize a structure to store the data
+dataStruct = struct();
+
+% Loop through each XLSX file, load it, and store it with the file name (without extension) as the field name
+for i = 1:numel(list_Covariates)
+    fileName = list_Covariates(i).name;
+    [~, name, ~] = fileparts(fileName);  % Remove the .xlsx extension
+    filePath = fullfile(File_path_Covariates, fileName);
+    dataStruct.(name) = xlsread(filePath); % Load XLSX data and store it with the modified file name as the field name
+end
+
+
+% Combining all data into a master matrix
+% First Column : Years
+% Second Column: AMS
+% rest columns : Covariates
+common_years = unique(AMS(:, 1)); % Initialize with AMS years
+
+% Initialize a cell array to store data with common years from all matrices
+common_data = cell(1, numel(list_Covariates) + 1);
+
+
+
+
+
+
+% Iterate through each matrix in dataStruct
+for i = 1:numel(list_Covariates)
+    fileName = list_Covariates(i).name;
+    [~, name, ~] = fileparts(fileName);  % Remove the .xlsx extension
+    current_matrix = dataStruct.(name);
+    
+    % Find common years with the current matrix
+    common_years = intersect(common_years, current_matrix(:, 1));
+end
+
+% Extract and store data for the common years
+common_data{1} = AMS(ismember(AMS(:, 1), common_years), 2); % Store AMS data
+
+% Iterate through each matrix in dataStruct again
+for i = 1:numel(list_Covariates)
+    fileName = list_Covariates(i).name;
+    [~, name, ~] = fileparts(fileName);  % Remove the .xlsx extension
+    current_matrix = dataStruct.(name);
+    
+    % Extract data for the common years
+    common_data{i + 1} = current_matrix(ismember(current_matrix(:, 1), common_years), 2);
+end
+
+common_data=cell2mat(common_data);
+[m,n]=size(common_data);
+Time=(1:size(common_years,1))';
+DATA=nan(m,n+2);
+DATA(:,1)=common_years;
+DATA(:,2:end-1)=common_data;
+DATA(:,end)=Time;
+% Seperating all data
+Years=DATA(:,1);
+
+AMS=(DATA(:,2)-mean(DATA(:,2)))./sqrt(var(DATA(:,2))); %Centered
+Covariate = DATA(:,3:end-1);
+% selection of best Covariates was done in other code
+Covariate=Covariate(:,best_covariates);
+for i=1:1:size(Covariate,2)
+    Covariate(:,i)=(Covariate(:,i)-mean(Covariate(:,i)))./sqrt(var(Covariate(:,i)));% centered
+end
+numPredictors = size(Covariate, 2);
+VIF = zeros(numPredictors, 1);
+
+for i = 1:numPredictors
+    predictorsWithoutI = [Covariate(:, 1:i-1), Covariate(:, i+1:end)];
+    mdlWithoutI = fitlm(predictorsWithoutI, Covariate(:, i));
+    R2 = mdlWithoutI.Rsquared.Ordinary;
+    VIF(i) = 1 / (1 - R2);
+end
+index=0; % For checking whether we need PCA or not
+for i=1:1:length(VIF)
+    if(VIF(i,1)>3)
+        index=1;
+    end
+end
+if(index==1)
+    [~, Covariate,~]=pca(Covariate);
+end
+
+
+%% Model Type: Non-Stationary with all covariates
+% % Model With all Covariates
+% Covariate = DATA(:,3:end-1);
+%Covariate=Covariate(:,best_covariates);
+
+
+% [coeff, score, latent]=pca(Covariate(:,1:end));
+%  Covariate(:,1:end)=score;
+
+
+% [p,q]=size(Covariate);
+% for i=1:1:q
+%     mu=mean(Covariate(:,i));
+%     sd=std(Covariate(:,i));
+%     Covariate(:,i)=(Covariate(:,i)-mu)/sd;
+% end
+
+% % Standardised AMS
+% AMS1=AMS;
+% mu1=mean(AMS1(:,1));
+% sd1=std(AMS1(:,1));
+% for i=1:length(AMS1)
+% AMS_standard(i,1)=(AMS1(i)-mu1)/sd1;
+% end
+% AMS=AMS_standard;
+
+
+%% Model Type: Non-Stationary with Time as a covariate
+%%Model with only Time as Covariate
+% Covariate=DATA(:,end);
+% [p,q]=size(Covariate);
+
+int_var(1:q+1,1:6)=NaN;
+MW=20;
+Change_point=NaN;
+[int_MW_par]=Par_series_TSW('gev',AMS,MW);
+int_MW_par(2,:)=log(int_MW_par(2,:)); % log is taken to ensure the positive values of scale parameter in GEV
+Z(1:3,1:3)=nan;
+for i=1:1:3
+    [Z(i,1), Z(i,2), Z(i,3)]=M_K_test(int_MW_par(i,:));
+   % col:1=Z value;Col:2=S value;Col:3=Trend(+1=+ve,-1=-ve,0=No trend)
+end
+Z(1,end)=0;
+%col:1=Z value;Col:2=S value;Col:3=Trend(+1=+ve,-1=-ve,0=No trend)
+
+int_var(1,[1,3,5])=0;
+k=1;
+for i=1:1:3
+   if Z(i,3)~=0
+       int_var(2:end,k)=0;  
+   end
+        
+   k=k+2;
+end
+
+% Defining Model type
+% Stationary
+% Non-Stationary Trend
+% Step Trend
+% Step No-Trend
+%% Model Type: STATIONARY
+% %Stationry Model
+% Covariate=ones(length(AMS),1);
+% [p,q]=size(Covariate);
+%  int_var(2,5)=NaN;
+% int_var(2,3)=NaN;
+Model_type={'-','-';'-','-';'-','-'};
+
+
+if(isnan(int_var(1,2))&&isnan(int_var(2,2))&&isnan(int_var(2,1)))
+    Model_type{1,1}='Stationary';
+end
+
+if(isnan(int_var(1,4))&&isnan(int_var(2,4))&&isnan(int_var(2,3)))
+    Model_type{2,1}='Stationary';
+elseif(~isnan(int_var(1,4))&&isnan(int_var(2,4))&&isnan(int_var(2,3)))
+    Model_type{2,1}='Step No-Trend';
+    Model_type{2,2}='Step No-Trend';
+elseif(isnan(int_var(1,4))&&isnan(int_var(2,4))&&~isnan(int_var(2,3)))
+    Model_type{2,1}='Non-Stationary Trend';
+elseif(~isnan(int_var(1,4))&&~isnan(int_var(2,4))&&isnan(int_var(2,3)))
+    Model_type{2,1}='Step No-Trend';
+    Model_type{2,2}='Step Trend';
+elseif(~isnan(int_var(1,4))&&isnan(int_var(2,4))&&~isnan(int_var(2,3)))
+    Model_type{2,1}='Step Trend';
+    Model_type{2,2}='Step No-Trend';
+else
+    Model_type{2,1}='Step Trend';
+    Model_type{2,2}='Step Trend';
+end
+
+if(isnan(int_var(1,6))&&isnan(int_var(2,6))&&isnan(int_var(2,5)))
+    Model_type{3,1}='Stationary';
+elseif(~isnan(int_var(1,6))&&isnan(int_var(2,6))&&isnan(int_var(2,5)))
+    Model_type{3,1}='Step No-Trend';
+    Model_type{3,2}='Step No-Trend';
+elseif(isnan(int_var(1,6))&&isnan(int_var(2,6))&&~isnan(int_var(2,5)))
+    Model_type{3,1}='Non-Stationary Trend';
+elseif(~isnan(int_var(1,6))&&~isnan(int_var(2,6))&&isnan(int_var(2,5)))
+    Model_type{3,1}='Step No-Trend';
+    Model_type{3,2}='Step Trend';
+elseif(~isnan(int_var(1,6))&&isnan(int_var(2,6))&&~isnan(int_var(2,5)))
+    Model_type{3,1}='Step Trend';
+    Model_type{3,2}='Step No-Trend';
+else
+    Model_type{3,1}='Step Trend';
+    Model_type{3,2}='Step Trend';
+end
+
+%Preparing the variable parameters table
+Sta_para=gevfit(AMS);
+int_var(1,1)=Sta_para(1,1);
+int_var(2,1)=NaN;
+int_var(:,2)=NaN;
+
+
+
+
+[int_var]=Variable_parameters(int_var,Model_type,Change_point,AMS,int_MW_par,Covariate);
+
+%DE-MC Iterations
+evl=7000;
+cha=5;
+bur=3000;
+sts=1;
+
+[para,Rhat,accrate,mix]= demc_gev(Model_type,int_var,AMS,evl,bur,sts,cha,Covariate,Change_point) ;
+
+while max(Rhat)>1.1||any(isnan(Rhat))||accrate<0.3
+    clc
+    [para,Rhat,accrate,mix]= demc_gev(Model_type,int_var,AMS,evl,bur,sts,cha,Covariate,Change_point) ;
+end
+
+[m,n]=size(Covariate);
+% % Taking exp of scale parameters;
+% if(strcmp(Model_type(2,1),'Stationary'))
+%     column=2;
+% elseif(strcmp(Model_type(2,1),'Non-Stationary Trend'))
+%     column=2:size(int_var,1)+1;   
+% end
+% % para(:,column)=exp(para(:,column));
+
+if(strcmp(Model_type(2,1),'Stationary') && strcmp(Model_type(3,1),'Stationary'))
+    shape=repmat(para(:,1),1,m);
+    scale_t=repmat(para(:,2),1,m);
+    mu_t=repmat(para(:,3),1,m);
+elseif(strcmp(Model_type(2,1),'Stationary') && strcmp(Model_type(3,1),'Non-Stationary Trend'))
+    shape=repmat(para(:,1),1,m);
+    scale_t = repmat(para(:,2),1,m);
+    mu_t = para(:,3:end-1)*Covariate' + para(:,end);
+elseif(strcmp(Model_type(2,1),'Non-Stationary Trend') && strcmp(Model_type(3,1),'Stationary'))
+    shape=repmat(para(:,1),1,m);
+    scale_t= para(:,2:n+1)*Covariate' + para(:,n+2);
+    mu_t = repmat(para(:,end),1,m);
+elseif(strcmp(Model_type(2,1),'Non-Stationary Trend') && strcmp(Model_type(3,1),'Non-Stationary Trend'))
+    shape=repmat(para(:,1),1,m);
+    scale_t= para(:,2:n+1)*Covariate' + para(:,n+2);
+    mu_t = para(:,n+3:end-1)*Covariate'+ para(:,end);
+end
+scale_t=exp(scale_t);
+mu11=median(mu_t);
+shape11=median(shape);
+scale11=median(scale_t);
+params=[shape11; scale11; mu11];
+save(filename);
+end
